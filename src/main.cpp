@@ -6,6 +6,7 @@
 #include "HardwareConstants.h"
 #include "TomThumbCAC.h"
 #include "ImpactFull12.h"
+#include "esp_wifi.h"
 
 WebServer server(80);
 void handleCommand();
@@ -29,19 +30,45 @@ HUB75_I2S_CFG mxconfig(
 );
 MatrixPanel_CC *dmaDisplay = MatrixPanel_CC::getInstance(mxconfig); // mxconfig is setup over in the hardware constants file.
 
-
-void setup() {
+void setup()
+{
 
   Serial.begin(115200);
-      // Set up the esp32 as a WiFi AP
-    WiFi.softAP("ESP32-AP", "powerpass");
-    Serial.println(WiFi.softAPIP());
+  // Set up the esp32 as a WiFi AP. Password: powerpass. I don't care who knows this. Whatcha gonna do, update my sign?
+  WiFi.softAP("HEATPLUG_MONITOR", "powerpass");
+  Serial.println(WiFi.softAPIP());
 
+  server.on("/clients", HTTP_GET, []()
+            {
+    wifi_sta_list_t wifi_sta_list;
+    tcpip_adapter_sta_list_t adapter_sta_list;
+    WiFi.softAPgetStationNum(); // Get the number of connected devices
+    esp_wifi_ap_get_sta_list(&wifi_sta_list); // Get the list of connected stations
+    tcpip_adapter_get_sta_list(&wifi_sta_list, &adapter_sta_list); // Get adapter info
+    String respString;
+    for (int i = 0; i < adapter_sta_list.num; i++) {
+      tcpip_adapter_sta_info_t station = adapter_sta_list.sta[i];
+      respString += "MAC: ";
+//      Serial.print("MAC: ");
+//      String macAddress;
+      for (int i = 0; i < 6; i++) {
+        respString += String(station.mac[i], HEX);
+        if (i < 5) {
+          respString += ":";
+        }
+      }
+//      Serial.println(macAddress);
+      respString += " IP: " + IPAddress(station.ip.addr).toString() + String("\n");
+      Serial.print("IP: ");
+      Serial.println(IPAddress(station.ip.addr));
+    }
+    server.send(200, "text/plain", "Clients: " + String(WiFi.softAPgetStationNum()) + "\n" + respString); });
 
   server.on("/cm", HTTP_GET, handleCommand);
   server.on("/current", HTTP_GET, handleCurrentReading);
 
-   server.onNotFound([]() {
+  server.onNotFound([]()
+                    {
     String message = "URI: ";
     message += server.uri();
     message += "\nMethod: ";
@@ -52,8 +79,7 @@ void setup() {
       message += "\n" + server.argName(i) + ": " + server.arg(i);
     }
     Serial.println(message);
-    server.send(404, "text/plain", "Not found");
-  });
+    server.send(404, "text/plain", "Not found"); });
 
   server.begin();
 
@@ -65,16 +91,16 @@ void setup() {
 
   dmaDisplay->fillScreen(COLOR_BLACK);
   dmaDisplay->printCenter(32, 20, COLOR_WHITE, "Startup");
-    
-  dmaDisplay->setFont(&Impact12Caps);
 
+  dmaDisplay->setFont(&Impact12Caps);
 }
 
-void loop() {
+void loop()
+{
   static time_t lastReadTime = 0;
-  
+
   server.handleClient();
-  
+
   heaterMonitor.update(currentReading, lastCurUpdate);
 
   // Print the current reading and the  flag every 3 second.
@@ -87,8 +113,6 @@ void loop() {
   updateDisplay(heaterMonitor.getState());
 
   yield();
-  
-  
 }
 
 void updateDisplay(HeaterState curState)
@@ -100,28 +124,40 @@ void updateDisplay(HeaterState curState)
     return;
   }
 
-  switch(curState)
+  int bottomY = 24;
+
+  switch (curState)
   {
-    case HeaterState::HOT:
-      dmaDisplay->fillScreen(COLOR_BLACK);
-      dmaDisplay->printCenter(32, 26, COLOR_RED, "HOT");
-      break;
-    case HeaterState::WARMING:
-      dmaDisplay->fillScreen(COLOR_BLACK);
-      dmaDisplay->printCenter(32, 26, COLOR_DARKORANGE, "WARMING");
-      break;
-    case HeaterState::COOL:
-      dmaDisplay->fillScreen(COLOR_BLACK);
-      dmaDisplay->printCenter(32, 26, COLOR_LIGHTBLUE, "COOL");
-      break;
-    case HeaterState::COOLING:
-      dmaDisplay->fillScreen(COLOR_BLACK);
-      dmaDisplay->printCenter(32, 26, COLOR_ORANGE, "COOLING");
-      break;
-    case HeaterState::UNKNOWN:
-      dmaDisplay->fillScreen(COLOR_BLACK);
-      dmaDisplay->printCenter(32, 26, COLOR_RED, "????");
-      break;
+  case HeaterState::HOT:
+    dmaDisplay->fillScreen(COLOR_BLACK);
+    dmaDisplay->printCenter(32, bottomY, COLOR_RED, "HOT");
+    dmaDisplay->setBrightness8(255);
+    break;
+  case HeaterState::WARMING:
+    dmaDisplay->fillScreen(COLOR_BLACK);
+    dmaDisplay->printCenter(32, bottomY, COLOR_DARKORANGE, "WARM");
+    dmaDisplay->setBrightness8(255);
+    break;
+  case HeaterState::COOL:
+    dmaDisplay->fillScreen(COLOR_BLACK);
+    dmaDisplay->printCenter(32, bottomY, COLOR_BLUE, "COLD");
+    dmaDisplay->setBrightness8(255);
+    break;
+  case HeaterState::OFF:
+    dmaDisplay->fillScreen(COLOR_BLACK);
+    dmaDisplay->printCenter(32, bottomY, COLOR_WHITE, "OFF");
+    dmaDisplay->setBrightness8(10);
+    break;
+  case HeaterState::COOLING:
+    dmaDisplay->fillScreen(COLOR_BLACK);
+    dmaDisplay->printCenter(32, bottomY, COLOR_LIGHTBLUE, "COOL");
+    dmaDisplay->setBrightness8(255);
+    break;
+  case HeaterState::UNKNOWN:
+    dmaDisplay->fillScreen(COLOR_BLACK);
+    dmaDisplay->printCenter(32, bottomY, COLOR_YELLOW, "????");
+    dmaDisplay->setBrightness8(255);
+    break;
   }
 
   lastState = curState;
@@ -129,31 +165,70 @@ void updateDisplay(HeaterState curState)
   return;
 }
 
-void handleCommand() {
-  if (server.hasArg("cmnd")) {
+void handleCommand()
+{
+  if (server.hasArg("cmnd"))
+  {
     String cmnd = server.arg("cmnd");
-    if (cmnd.startsWith("/current?value=")) {
+    if (cmnd.startsWith("/current?value="))
+    {
       String value = cmnd.substring(15); // Extract the value after "="
       Serial.println("Current reading via cm: " + value);
       currentReading = value.toFloat();
       server.send(200, "text/plain", "Received: " + value);
       lastCurUpdate = millis();
-    } else {
+    }
+    else
+    {
       server.send(400, "text/plain", "Invalid command");
     }
-  } else {
+  }
+  else
+  {
     server.send(400, "text/plain", "No command provided");
   }
 }
 
-void handleCurrentReading() {
-  if (server.hasArg("value")) {
+void handleCurrentReading()
+{
+  if (server.hasArg("value"))
+  {
     String current = server.arg("value");
     Serial.println("Current reading via current: " + current);
     currentReading = current.toFloat();
     lastCurUpdate = millis();
     server.send(200, "text/plain", "Received: " + current);
-  } else {
+  }
+  else
+  {
     server.send(400, "text/plain", "No current value provided");
+  }
+}
+
+void listConnectedDevices()
+{
+  wifi_sta_list_t wifi_sta_list;
+  tcpip_adapter_sta_list_t adapter_sta_list;
+
+  memset(&wifi_sta_list, 0, sizeof(wifi_sta_list));
+  memset(&adapter_sta_list, 0, sizeof(adapter_sta_list));
+
+  esp_wifi_ap_get_sta_list(&wifi_sta_list);
+  tcpip_adapter_get_sta_list(&wifi_sta_list, &adapter_sta_list);
+
+  for (int i = 0; i < adapter_sta_list.num; i++)
+  {
+    tcpip_adapter_sta_info_t station = adapter_sta_list.sta[i];
+    Serial.print("Station ");
+    Serial.print(i + 1);
+    Serial.print(" - MAC: ");
+    for (int j = 0; j < 6; j++)
+    {
+      Serial.printf("%02X", station.mac[j]);
+      if (j < 5)
+        Serial.print(":");
+    }
+    Serial.print(" - IP: ");
+    Serial.println(IPAddress(station.ip.addr));
   }
 }

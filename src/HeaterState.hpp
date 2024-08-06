@@ -4,6 +4,7 @@ enum class HeaterState
 {
     STARTUP,
     COOL,
+    OFF,
     WARMING,
     HOT,
     COOLING,
@@ -52,11 +53,18 @@ public:
                 setState(HeaterState::COOL);
             }
             break;
-        // If it's currently cool, and we see power, go to warming. No power? Stay cool.
+        // If it's currently cool, and we see power, go to warming. If it stays off for x seconds, dim the display
+        case HeaterState::OFF:
+            // Fall through.
         case HeaterState::COOL:
             if (powerReading > 0)
             {
                 setState(HeaterState::WARMING, updateTime);
+            }
+            if (updateTime - lastStateChangeTime > 10000)
+            {
+                // Transition to COOL if in COOL state for 20 seconds
+                setState(HeaterState::OFF, updateTime);
             }
             break;
         // If it's warming and it goes off, assume hot. If it's been warming for 2 minutes, go to hot.
