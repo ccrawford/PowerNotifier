@@ -12,6 +12,8 @@ WebServer server(80);
 void handleCommand();
 void handleCurrentReading();
 void updateDisplay(HeaterState curState);
+void updateTimer(long seconds);
+
 
 float currentReading = 0.0;
 unsigned long lastCurUpdate = 0;
@@ -103,14 +105,15 @@ void loop()
 
   heaterMonitor.update(currentReading, lastCurUpdate);
 
-  // Print the current reading and the  flag every 3 second.
-  if (millis() % 3000 == 0)
+  // Print the current reading and the  flag every 5 second.
+  if (millis() % 5000 == 0)
   {
     Serial.println("Current Reading: " + String(currentReading) + " curState: " + String((int)heaterMonitor.getState()) + " @ " + String(lastCurUpdate));
     Serial.println((int)heaterMonitor.getState());
   }
 
   updateDisplay(heaterMonitor.getState());
+  if(millis() % 1000 == 0) updateTimer(heaterMonitor.secondsSinceLastStateChange());
 
   yield();
 }
@@ -119,12 +122,14 @@ void updateDisplay(HeaterState curState)
 {
   static HeaterState lastState = HeaterState::UNKNOWN;
 
+  dmaDisplay->setFont(&Impact12Caps);
+
   if (curState == lastState)
   {
     return;
   }
 
-  int bottomY = 24;
+  int bottomY = 20;
 
   switch (curState)
   {
@@ -150,12 +155,12 @@ void updateDisplay(HeaterState curState)
     break;
   case HeaterState::COOLING:
     dmaDisplay->fillScreen(COLOR_BLACK);
-    dmaDisplay->printCenter(32, bottomY, COLOR_LIGHTBLUE, "COOL");
+    dmaDisplay->printCenter(32, bottomY, COLOR_LIGHTBLUE, "WARM");
     dmaDisplay->setBrightness8(255);
     break;
   case HeaterState::UNKNOWN:
     dmaDisplay->fillScreen(COLOR_BLACK);
-    dmaDisplay->printCenter(32, bottomY, COLOR_YELLOW, "????");
+    dmaDisplay->printCenter(32, bottomY, COLOR_ORANGE, "????");
     dmaDisplay->setBrightness8(255);
     break;
   }
@@ -163,6 +168,29 @@ void updateDisplay(HeaterState curState)
   lastState = curState;
 
   return;
+}
+
+void updateTimer(long dispSeconds)
+{
+  // format seconds into hh:mm:ss
+  long hours = dispSeconds / 3600;
+  long minutes = (dispSeconds % 3600) / 60;
+  long secs = dispSeconds % 60;
+  // Format time. Skip hours if it's 0.
+  char timeStr[9];
+    
+  if (hours > 0)
+  {
+    sprintf(timeStr, "%ld:%02ld:%02ld", hours, minutes, secs);
+  }
+  else
+  {
+    sprintf(timeStr, "%02ld:%02ld", minutes, secs);
+  }
+
+  dmaDisplay->fillRect(0,21,64,10,COLOR_BLACK);
+  dmaDisplay->setFont(&TomThumb);
+  dmaDisplay->printAt(0, 31, COLOR_WHITE50, timeStr);
 }
 
 void handleCommand()

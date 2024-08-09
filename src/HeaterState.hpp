@@ -1,5 +1,16 @@
 #include <Arduino.h>
 
+// Timer constants
+
+#define OFF_TO_WARM 0*1000      // 0 seconds
+#define WARM_TO_HOT 100*1000    // 100 seconds. Measured.
+#define HOT_TO_WARM 15*60*1000   // 15 minutes
+#define WARM_TO_COOL 10*60*1000  // 10 minutes
+#define COOL_TO_OFF 10*60*1000  // 10 minutes 
+#define IDLE_CURRENT 0.1
+#define WARMING_CURRENT 12.4
+
+
 enum class HeaterState
 {
     STARTUP,
@@ -21,6 +32,11 @@ private:
 
 public:
     HeaterMonitor() : currentState(HeaterState::STARTUP), lastStateChangeTime(0), lastPowerReading(0), unknownFlag(false) {}
+
+    long secondsSinceLastStateChange()
+    {
+        return (millis() - lastStateChangeTime) / 1000;
+    }
 
     // powerReading is the raw reading from the current monitor. 
     // updateTime is the time the reading was last sent from the monitor
@@ -50,7 +66,7 @@ public:
             }
             else if (updateTime - lastStateChangeTime > 20000)
             {
-                setState(HeaterState::COOL);
+                setState(HeaterState::OFF);
             }
             break;
         // If it's currently cool, and we see power, go to warming. If it stays off for x seconds, dim the display
@@ -61,9 +77,8 @@ public:
             {
                 setState(HeaterState::WARMING, updateTime);
             }
-            if (updateTime - lastStateChangeTime > 10000)
+            if (updateTime - lastStateChangeTime > COOL_TO_OFF)
             {
-                // Transition to COOL if in COOL state for 20 seconds
                 setState(HeaterState::OFF, updateTime);
             }
             break;
@@ -74,7 +89,7 @@ public:
             {
                 setState(HeaterState::HOT, updateTime);
             }
-            else if (updateTime - lastStateChangeTime > 120000)
+            else if (updateTime - lastStateChangeTime > WARM_TO_HOT)
             {
                 // Transition to HOT if in WARMING state for 2 minutes
                 setState(HeaterState::HOT, updateTime);
@@ -83,7 +98,7 @@ public:
 
         // The 90 second delay is because it stays hot for a long time.
         case HeaterState::HOT:
-            if (powerReading == 0 && updateTime - lastStateChangeTime > 90000)
+            if (powerReading == 0 && updateTime - lastStateChangeTime > HOT_TO_WARM)
             {
                 setState(HeaterState::COOLING, updateTime);
             }
@@ -94,7 +109,7 @@ public:
             {
                 setState(HeaterState::WARMING, updateTime);
             }
-            else if (updateTime - lastStateChangeTime > 120000)
+            else if (updateTime - lastStateChangeTime > COOL_TO_OFF)
             {
                 setState(HeaterState::COOL, updateTime);
             }
@@ -155,7 +170,6 @@ private:
         {
             currentState = newState;
             lastStateChangeTime = updateTime;
-            // Here you could add code to update your signage
             Serial.println(updateSignage() + " @ " + String(lastStateChangeTime));
         }
     }
