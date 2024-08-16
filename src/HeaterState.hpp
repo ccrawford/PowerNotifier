@@ -1,70 +1,136 @@
 #include <Arduino.h>
 
-// Timer constants
+// #define HOME_TESTING 0
 
-#define OFF_TO_WARM 0*1000      // 0 seconds
-#define WARM_TO_HOT 100*1000    // 100 seconds. Measured.
-#define HOT_TO_WARM 15*60*1000   // 15 minutes
-#define WARM_TO_COOL 10*60*1000  // 10 minutes
-#define COOL_TO_OFF 10*60*1000  // 10 minutes 
-#define IDLE_CURRENT 0.1
-#define WARMING_CURRENT 12.4
+#ifdef HOME_TESTING
 
+#define STARTUP_TIMEOUT_MS 20 * 1000   // 20 seconds  It's hard to tell what's going on at startup, but if no power assume cool
+#define OFF_TO_WARM_MS 0 * 1000        // 0 seconds
+#define WARM_TO_HOT_MS 10 * 1000      // 10 seconds. 
+#define HOT_TO_WARM_MS  60 * 1000  // 1 minutes. Takes a long time!
+#define WARM_TO_COOL_MS 30  * 1000 // 30 sec. Estimation. NEed to measure.
+#define COOL_TO_OFF_MS 15 * 60 * 1000  // 15 minutes
+#define LOST_CONNECTION_MS 10 * 1000   // 10 seconds  We haven't gotten a plug update in 10 seconds. Normal is 1 per sec
+
+// LOWER bounds of current readings for each state
+#define OFF_CURRENT_A 0.0
+#define IDLE_CURRENT_A 0.15
+#define HEATING_CURRENT_A .33    // I think it's around 12.4, so over this and under HOT is warming.
+#define MAINTAINING_CURRENT_A .10 // I think it's around 7.6, so over this and under WARMING is maintaining.
+
+#else
+
+#define STARTUP_TIMEOUT_MS 20 * 1000   // 20 seconds  It's hard to tell what's going on at startup, but if no power assume cool
+#define OFF_TO_WARM_MS 0 * 1000        // 0 seconds
+#define WARM_TO_HOT_MS 100 * 1000      // 100 seconds. Measured.
+#define HOT_TO_WARM_MS 72 * 60 * 1000  // 72 minutes. Takes a long time!
+#define WARM_TO_COOL_MS 30 * 60 * 1000 // 30 minutes. Estimation. NEed to measure.
+#define COOL_TO_OFF_MS 15 * 60 * 1000  // 15 minutes
+#define LOST_CONNECTION_MS 10 * 1000   // 10 seconds  We haven't gotten a plug update in 10 seconds. Normal is 1 per sec
+
+// LOWER bounds of current readings for each state
+#define OFF_CURRENT_A 0.0
+#define HEATING_CURRENT_A 12.0    // I think it's around 12.4, so over this and under HOT is warming.
+#define MAINTAINING_CURRENT_A 0.05 // I think it's around 7.6, so over this and under WARMING is maintaining.
+
+#endif
+
+enum class HeaterTrend
+{
+    HEATING,
+    COOLING,
+    MAINTAINING,
+    IDLE,
+    UNKNOWN
+};
 
 enum class HeaterState
 {
     STARTUP,
     COOL,
     OFF,
-    WARMING,
+    WARM,
     HOT,
-    COOLING,
+    UNKNOWN
+};
+
+enum class PowerState
+{
+    ON,
+    OFF,
     UNKNOWN
 };
 
 class HeaterMonitor
 {
 private:
-    HeaterState currentState;
+    HeaterState _currentState;
+    HeaterTrend _heaterTrend;
     unsigned long lastStateChangeTime;
+    unsigned long lastTrendChangeTime;
     float lastPowerReading;
     bool unknownFlag;
 
 public:
-    HeaterMonitor() : currentState(HeaterState::STARTUP), lastStateChangeTime(0), lastPowerReading(0), unknownFlag(false) {}
+    HeaterMonitor() : _currentState(HeaterState::STARTUP), lastStateChangeTime(0), lastPowerReading(0), unknownFlag(false)
+    {
+        _heaterTrend = HeaterTrend::UNKNOWN;
+    }
 
     long secondsSinceLastStateChange()
     {
         return (millis() - lastStateChangeTime) / 1000;
     }
 
-    // powerReading is the raw reading from the current monitor. 
+    long secondsSinceLastTrendChange()
+    {
+        return (millis() - lastTrendChangeTime) / 1000;
+    }
+
+    // powerReading is the raw reading from the current monitor.
     // updateTime is the time the reading was last sent from the monitor
     void update(float powerReading, unsigned long updateTime)
     {
-        // Check for unknown state
-        if (millis() - updateTime > 10000)
+        // Check for unknown state. Set values and return if unknown.
+        if (millis() - updateTime > LOST_CONNECTION_MS)
         {
             setState(HeaterState::UNKNOWN, updateTime);
+            setTrend(HeaterTrend::UNKNOWN);
             unknownFlag = true;
+            return;
         }
         else
         {
             unknownFlag = false;
         }
 
-        // Serial.println("Time since update: " + String(millis() - updateTime));
+        // Set the trend: heating, cooling, maintaining, or idle.
+        if (powerReading >= HEATING_CURRENT_A)
+        {
+            setTrend(HeaterTrend::HEATING);
+        }
+        else if (powerReading >= MAINTAINING_CURRENT_A)
+        {
+            setTrend(HeaterTrend::MAINTAINING);
+        }
+        else
+        {
+            if (getState() == HeaterState::COOL || getState() == HeaterState::OFF)  // Note that this will be the state in the last loop.
+                setTrend(HeaterTrend::IDLE);
+            else
+                setTrend(HeaterTrend::COOLING);
+        }
 
         // State machine logic
-        switch (currentState)
+        switch (_currentState)
         {
         // If you see power during startup, go to hot. Else if nothing for (hysteresis time) go to cool.
-        case HeaterState::STARTUP:      
-            if (powerReading > 0)
+        case HeaterState::STARTUP:
+            if (powerReading > OFF_CURRENT_A) // If you see any current during startup, go to hot.
             {
                 setState(HeaterState::HOT, updateTime);
             }
-            else if (updateTime - lastStateChangeTime > 20000)
+            else if (updateTime - lastStateChangeTime > STARTUP_TIMEOUT_MS)
             {
                 setState(HeaterState::OFF);
             }
@@ -73,73 +139,78 @@ public:
         case HeaterState::OFF:
             // Fall through.
         case HeaterState::COOL:
-            if (powerReading > 0)
+            if (powerReading > HEATING_CURRENT_A)
             {
-                setState(HeaterState::WARMING, updateTime);
+                setState(HeaterState::WARM, updateTime);
             }
-            if (updateTime - lastStateChangeTime > COOL_TO_OFF)
-            {
-                setState(HeaterState::OFF, updateTime);
-            }
-            break;
-        // If it's warming and it goes off, assume hot. If it's been warming for 2 minutes, go to hot.
-        // This could mean if it's turned on accidentally and immediately turned off, it will incorrectly go to hot.
-        case HeaterState::WARMING:
-            if (powerReading == 0)
+            else if (powerReading >= MAINTAINING_CURRENT_A) // Theoretically should not see this.
             {
                 setState(HeaterState::HOT, updateTime);
+                Serial.printf("Unexpected power reading in state %d: %f\n", (int)_currentState, powerReading);
             }
-            else if (updateTime - lastStateChangeTime > WARM_TO_HOT)
+            else if (powerReading < MAINTAINING_CURRENT_A)
             {
-                // Transition to HOT if in WARMING state for 2 minutes
-                setState(HeaterState::HOT, updateTime);
-            }
-            break;
+                if (updateTime - lastStateChangeTime > COOL_TO_OFF_MS) // Eventually set state to off if it's been cool for a while.
+                {
+                    setState(HeaterState::OFF, updateTime);
+                }
+                break;
+            // If it's warming and it goes off, assume hot. If it's been warming for 2 minutes, go to hot.
+            // This could mean if it's turned on accidentally and immediately turned off, it will incorrectly go to hot.
+            case HeaterState::WARM:
+                if (getTrend() == HeaterTrend::MAINTAINING)  // Heater is maintaining...hot, but should have already been there.
+                {
+                    setState(HeaterState::HOT, updateTime);
+                }
+                else if (getTrend() == HeaterTrend::HEATING && lastStateChangeTime > WARM_TO_HOT_MS)
+                {
+                    setState(HeaterState::HOT, updateTime);
+                }
+                else if (getTrend() == HeaterTrend::COOLING && lastStateChangeTime > WARM_TO_COOL_MS)
+                {
+                    setState(HeaterState::COOL, updateTime);
+                }
+                break;
 
-        // The 90 second delay is because it stays hot for a long time.
-        case HeaterState::HOT:
-            if (powerReading == 0 && updateTime - lastStateChangeTime > HOT_TO_WARM)
-            {
-                setState(HeaterState::COOLING, updateTime);
-            }
-            break;
+            // The 90 second delay is because it stays hot for a long time.
+            case HeaterState::HOT:
+            // BUG XXXX This is using the last State Change time which will be for previous state.
+                if (getTrend() == HeaterTrend::COOLING && updateTime - lastStateChangeTime > HOT_TO_WARM_MS)
+                {
+                    setState(HeaterState::WARM, updateTime);
+                }
+                break;
 
-        case HeaterState::COOLING:
-            if (powerReading > 0)
-            {
-                setState(HeaterState::WARMING, updateTime);
+            case HeaterState::UNKNOWN:
+                if (!unknownFlag)
+                {
+                    // Transition back to startup State
+                    setState(HeaterState::STARTUP, updateTime);
+                }
+                break;
             }
-            else if (updateTime - lastStateChangeTime > COOL_TO_OFF)
+            // Check for unknown state after state machine logic
+            if (unknownFlag && _currentState != HeaterState::UNKNOWN)
             {
-                setState(HeaterState::COOL, updateTime);
+                setState(HeaterState::UNKNOWN, updateTime);
             }
-            break;
-
-        case HeaterState::UNKNOWN:
-            if (!unknownFlag)
-            {
-                // Transition back to startup State
-                setState(HeaterState::STARTUP, updateTime);
-            }
-            break;
-        }
-
-        // Check for unknown state after state machine logic
-        if (unknownFlag && currentState != HeaterState::UNKNOWN)
-        {
-            setState(HeaterState::UNKNOWN, updateTime);
         }
     }
 
     HeaterState getState() const
     {
-        return currentState;
+        return _currentState;
+    }
+
+    HeaterTrend getTrend() const
+    {
+        return _heaterTrend;
     }
 
     String updateSignage()
     {
         // Implement your signage update logic here
-        switch (currentState)
+        switch (_currentState)
         {
         case HeaterState::STARTUP:
             return "Signage: Starting up";
@@ -147,14 +218,11 @@ public:
         case HeaterState::COOL:
             return "Signage: Cool";
             break;
-        case HeaterState::WARMING:
+        case HeaterState::WARM:
             return "Signage: Warming";
             break;
         case HeaterState::HOT:
             return "Signage: Hot";
-            break;
-        case HeaterState::COOLING:
-            return "Signage: Cooling";
             break;
         case HeaterState::UNKNOWN:
             return "Signage: Unknown";
@@ -166,11 +234,20 @@ public:
 private:
     void setState(HeaterState newState, unsigned long updateTime = millis())
     {
-        if (newState != currentState)
+        if (newState != _currentState)
         {
-            currentState = newState;
+            _currentState = newState;
             lastStateChangeTime = updateTime;
             Serial.println(updateSignage() + " @ " + String(lastStateChangeTime));
+        }
+    }
+    void setTrend(HeaterTrend newTrend)
+    {
+        if (newTrend != _heaterTrend)
+        {
+            lastTrendChangeTime = millis();
+            _heaterTrend = newTrend;
+            Serial.println("Trend: " + String((int)_heaterTrend) + " @ " + String(lastTrendChangeTime));
         }
     }
 };

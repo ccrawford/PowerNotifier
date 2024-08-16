@@ -13,6 +13,7 @@ Update/configure the tasmota as necessary.
 
 Go to the tasmota console and run the following three commands: 
     Rule1 ON Energy#Current DO WebSend [192.168.4.1] GET /current?value=%value% ENDON 
+    Rule1 ON Energy#Current DO WebQuery http://192.168.4.1/current?value=%value% ENDON   // This works better.
 
     Rule1 1
 

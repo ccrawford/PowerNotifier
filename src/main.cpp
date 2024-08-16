@@ -14,7 +14,6 @@ void handleCurrentReading();
 void updateDisplay(HeaterState curState);
 void updateTimer(long seconds);
 
-
 float currentReading = 0.0;
 unsigned long lastCurUpdate = 0;
 
@@ -51,15 +50,12 @@ void setup()
     for (int i = 0; i < adapter_sta_list.num; i++) {
       tcpip_adapter_sta_info_t station = adapter_sta_list.sta[i];
       respString += "MAC: ";
-//      Serial.print("MAC: ");
-//      String macAddress;
       for (int i = 0; i < 6; i++) {
         respString += String(station.mac[i], HEX);
         if (i < 5) {
           respString += ":";
         }
       }
-//      Serial.println(macAddress);
       respString += " IP: " + IPAddress(station.ip.addr).toString() + String("\n");
       Serial.print("IP: ");
       Serial.println(IPAddress(station.ip.addr));
@@ -113,7 +109,8 @@ void loop()
   }
 
   updateDisplay(heaterMonitor.getState());
-  if(millis() % 1000 == 0) updateTimer(heaterMonitor.secondsSinceLastStateChange());
+  if (millis() % 1000 == 0)
+    updateTimer(heaterMonitor.secondsSinceLastTrendChange());
 
   yield();
 }
@@ -138,7 +135,7 @@ void updateDisplay(HeaterState curState)
     dmaDisplay->printCenter(32, bottomY, COLOR_RED, "HOT");
     dmaDisplay->setBrightness8(255);
     break;
-  case HeaterState::WARMING:
+  case HeaterState::WARM:
     dmaDisplay->fillScreen(COLOR_BLACK);
     dmaDisplay->printCenter(32, bottomY, COLOR_DARKORANGE, "WARM");
     dmaDisplay->setBrightness8(255);
@@ -152,11 +149,6 @@ void updateDisplay(HeaterState curState)
     dmaDisplay->fillScreen(COLOR_BLACK);
     dmaDisplay->printCenter(32, bottomY, COLOR_WHITE, "OFF");
     dmaDisplay->setBrightness8(10);
-    break;
-  case HeaterState::COOLING:
-    dmaDisplay->fillScreen(COLOR_BLACK);
-    dmaDisplay->printCenter(32, bottomY, COLOR_LIGHTBLUE, "WARM");
-    dmaDisplay->setBrightness8(255);
     break;
   case HeaterState::UNKNOWN:
     dmaDisplay->fillScreen(COLOR_BLACK);
@@ -178,7 +170,7 @@ void updateTimer(long dispSeconds)
   long secs = dispSeconds % 60;
   // Format time. Skip hours if it's 0.
   char timeStr[9];
-    
+
   if (hours > 0)
   {
     sprintf(timeStr, "%ld:%02ld:%02ld", hours, minutes, secs);
@@ -188,9 +180,39 @@ void updateTimer(long dispSeconds)
     sprintf(timeStr, "%02ld:%02ld", minutes, secs);
   }
 
-  dmaDisplay->fillRect(0,21,64,10,COLOR_BLACK);
-  dmaDisplay->setFont(&TomThumb);
-  dmaDisplay->printAt(0, 31, COLOR_WHITE50, timeStr);
+  // Select color based on current trend.
+  HeaterTrend heatTrend = heaterMonitor.getTrend();
+  uint16_t trendColor = COLOR_WHITE;
+  String timeText = "";
+  switch (heatTrend)
+  {
+  case HeaterTrend::HEATING:
+    trendColor = COLOR_RED;
+    timeText = "Heating for: ";
+    break;
+  case HeaterTrend::COOLING:
+    trendColor = COLOR_LIGHTBLUE;
+    timeText = "Cooling for: ";
+    break;
+  case HeaterTrend::MAINTAINING:
+    trendColor = COLOR_GREEN;
+    timeText = "Ready for: ";
+    break;
+  case HeaterTrend::IDLE:
+    trendColor = COLOR_WHITE;
+    timeText = "Idle for: ";
+    break;
+  case HeaterTrend::UNKNOWN:
+    trendColor = COLOR_ORANGE;
+    timeText = "Unknown for: ";
+    break;
+  }
+  if (heaterMonitor.getState() != HeaterState::OFF && heaterMonitor.getState() != HeaterState::STARTUP)
+  {
+    dmaDisplay->fillRect(0, 21, 64, 11, COLOR_BLACK);
+    dmaDisplay->setFont(&TomThumb);
+    dmaDisplay->printAt(0, 31, trendColor, "%s%s", timeText.c_str(), timeStr);
+  }
 }
 
 void handleCommand()
