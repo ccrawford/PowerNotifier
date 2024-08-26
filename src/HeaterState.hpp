@@ -41,7 +41,8 @@ enum class HeaterTrend
     COOLING,
     MAINTAINING,
     IDLE,
-    UNKNOWN
+    UNKNOWN,
+    STARTUP
 };
 
 enum class HeaterState
@@ -172,9 +173,7 @@ public:
                 }
                 break;
 
-            // The 90 second delay is because it stays hot for a long time.
             case HeaterState::HOT:
-            // BUG XXXX This is using the last State Change time which will be for previous state.
                 if (getTrend() == HeaterTrend::COOLING && updateTime - lastStateChangeTime > HOT_TO_WARM_MS)
                 {
                     setState(HeaterState::WARM, updateTime);

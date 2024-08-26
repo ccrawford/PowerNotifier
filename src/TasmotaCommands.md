@@ -27,3 +27,9 @@ If you visit 192.168.4.1/clients you can see the IP addresses of the connected c
 
 Note that it's easy to get confused about which network is which! Just remember the tasmota and the esp are on the 192.168.4.1 network, and if you want to see either of them you'll need to be on the same one.
 
+Trying to fix restart
+
+rule2
+ON wifi#connected DO ruletimer1 0 ENDON 
+ON wifi#disconnected DO ruletimer1 60 ENDON 
+ON rules#timer=1 DO restart 1 ENDON

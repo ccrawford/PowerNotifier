@@ -1,3 +1,7 @@
+#include <vector>
+#include <tuple>
+#include <map>
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -13,6 +17,7 @@ void handleCommand();
 void handleCurrentReading();
 void updateDisplay(HeaterState curState);
 void updateTimer(long seconds);
+bool shouldDisplayBeOn();
 
 float currentReading = 0.0;
 unsigned long lastCurUpdate = 0;
@@ -35,6 +40,74 @@ void setup()
 {
 
   Serial.begin(115200);
+  while (!Serial)
+    ;
+
+  Serial.println(compile_info);
+
+  dmaDisplay->resetPanel(_pins);
+  dmaDisplay->setRotation(0);
+  dmaDisplay->begin();
+  dmaDisplay->setBrightness8(255);
+  dmaDisplay->setFont(&TomThumb);
+
+  dmaDisplay->fillScreen(COLOR_BLACK);
+  dmaDisplay->printCenter(32, 7, COLOR_WHITE, "Startup");
+
+  // First, connect to internet and check time of day.
+  dmaDisplay->setCursor(0, 14);
+  dmaDisplay->setTextWrap(true);
+  dmaDisplay->print("Connecting WiFi");
+  WiFi.mode(WIFI_MODE_APSTA);
+  WiFi.begin("CAC_Unifi", "illini1230");
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    static int retryCounter = 0;
+    delay(500);
+    Serial.print(".");
+    dmaDisplay->print(".");
+    retryCounter++;
+    if (retryCounter > 50)
+    {
+      dmaDisplay->fillScreen(COLOR_BLACK);
+      dmaDisplay->printAt(0, 14, COLOR_RED, "Failed to connect");
+      delay(5000);
+      // reset and try again
+      ESP.restart();
+    }
+  }
+  Serial.println("Connected to WiFi");
+  dmaDisplay->fillScreen(COLOR_BLACK);
+  dmaDisplay->printAt(0, 14, COLOR_GREEN, "Connected!");
+  dmaDisplay->printAt(0, 21, COLOR_WHITE, "Get Time");
+
+  // Get ntp time and set.
+  struct tm timeinfo;
+  int retryCounter = 0;
+  do
+  {
+    dmaDisplay->print(".");
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    retryCounter++;
+    delay(500);
+  } while (!getLocalTime(&timeinfo) && retryCounter < 4);
+
+  // Set timezone to Central Standard Time and daylight savings time to false.
+  setenv("TZ", "CST6CDT,M3.2.0,M11.1.0", 1);
+  tzset();
+  // Check the time is right
+  if (!getLocalTime(&timeinfo))
+  {
+    Serial.println("Failed to obtain time");
+    dmaDisplay->printAt(0, 28, COLOR_RED, "No time fetch");
+    return;
+  }
+  else
+  { // Print the time
+    Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+    dmaDisplay->printAt(0, 28, asctime(&timeinfo));
+  }
+
   // Set up the esp32 as a WiFi AP. Password: powerpass. I don't care who knows this. Whatcha gonna do, update my sign?
   WiFi.softAP("HEATPLUG_MONITOR", "powerpass");
   Serial.println(WiFi.softAPIP());
@@ -81,25 +154,26 @@ void setup()
 
   server.begin();
 
-  dmaDisplay->resetPanel(_pins);
-  dmaDisplay->setRotation(0);
-  dmaDisplay->begin();
-  dmaDisplay->setBrightness8(255);
-  dmaDisplay->setFont(&TomThumb);
-
-  dmaDisplay->fillScreen(COLOR_BLACK);
-  dmaDisplay->printCenter(32, 20, COLOR_WHITE, "Startup");
-
   dmaDisplay->setFont(&Impact12Caps);
 }
 
 void loop()
 {
   static time_t lastReadTime = 0;
+  static unsigned long lastTimeUpdate = 0;
+  static unsigned long lastUpdate = 0;
 
   server.handleClient();
 
   heaterMonitor.update(currentReading, lastCurUpdate);
+
+  updateDisplay(heaterMonitor.getState());
+
+  if (millis() - lastUpdate > 200)
+  {
+    updateTimer(heaterMonitor.secondsSinceLastTrendChange());
+    lastUpdate = millis();
+  }
 
   // Print the current reading and the  flag every 5 second.
   if (millis() % 5000 == 0)
@@ -108,26 +182,61 @@ void loop()
     Serial.println((int)heaterMonitor.getState());
   }
 
-  updateDisplay(heaterMonitor.getState());
-  if (millis() % 1000 == 0)
-    updateTimer(heaterMonitor.secondsSinceLastTrendChange());
+  // Update the time at 2am local time if it's been more than 2 hours since the last update.
+  struct tm timeinfo;
+  getLocalTime(&timeinfo);
+  // if (timeinfo.tm_sec == 0 && (millis() - lastTimeUpdate) > 60 * 60 * 1000)
+  //  We can try multiple times in the first minute if the update fails.
+  if (timeinfo.tm_hour == 2 && timeinfo.tm_min == 0 && (millis() - lastTimeUpdate) > 7200000)
+  {
 
-  yield();
-}
+    getLocalTime(&timeinfo);
+    Serial.println("Updating time at 2am");
+    Serial.println(&timeinfo, "Old time: %A, %B %d %Y %H:%M:%S");
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    setenv("TZ", "CST6CDT,M3.2.0,M11.1.0", 1);
+    tzset();
+
+    if (!getLocalTime(&timeinfo))
+    {
+      Serial.println("Failed to obtain time");
+      dmaDisplay->setFont(&TomThumb);
+      dmaDisplay->fillRect(0, 21, 64, 11, COLOR_BLACK);
+      dmaDisplay->printAt(0, 28, COLOR_RED, "Time fetch error");
+    }
+    else
+    { // Print the time
+      Serial.println(&timeinfo, "New time: %A, %B %d %Y %H:%M:%S");
+      dmaDisplay->setFont(&TomThumb);
+      dmaDisplay->fillRect(0, 21, 64, 11, COLOR_BLACK);
+      dmaDisplay->printAt(0, 28, COLOR_GREEN, "Time updated");
+      lastTimeUpdate = millis();
+    }
+  }
+
+
+
+} // Loop
 
 void updateDisplay(HeaterState curState)
 {
-  static HeaterState lastState = HeaterState::UNKNOWN;
+  static HeaterState lastState = HeaterState::STARTUP;
 
-  dmaDisplay->setFont(&Impact12Caps);
+  if (curState==HeaterState::OFF && !shouldDisplayBeOn())
+  {
+    // Turn off the display and bail
+    dmaDisplay->setBrightness8(0);
+    return;
+  }
 
+  // If no change, bail to prevent flicker.
   if (curState == lastState)
   {
     return;
   }
 
   int bottomY = 20;
-
+  dmaDisplay->setFont(&Impact12Caps);
   switch (curState)
   {
   case HeaterState::HOT:
@@ -162,28 +271,32 @@ void updateDisplay(HeaterState curState)
   return;
 }
 
-void updateTimer(long dispSeconds)
+// Update the timer display based on the current duration in seconds.
+void updateTimer(long durSeconds)
 {
   // format seconds into hh:mm:ss
-  long hours = dispSeconds / 3600;
-  long minutes = (dispSeconds % 3600) / 60;
-  long secs = dispSeconds % 60;
+  long hours = durSeconds / 3600;
+  long minutes = (durSeconds % 3600) / 60;
+  long secs = durSeconds % 60;
   // Format time. Skip hours if it's 0.
-  char timeStr[9];
+  char durationStr[9];
+  static char lastDurationStr[9] = "";
 
   if (hours > 0)
   {
-    sprintf(timeStr, "%ld:%02ld:%02ld", hours, minutes, secs);
+    sprintf(durationStr, "%ld:%02ld:%02ld", hours, minutes, secs);
   }
   else
   {
-    sprintf(timeStr, "%02ld:%02ld", minutes, secs);
+    sprintf(durationStr, "%ld:%02ld", minutes, secs);
   }
 
   // Select color based on current trend.
   HeaterTrend heatTrend = heaterMonitor.getTrend();
   uint16_t trendColor = COLOR_WHITE;
   String timeText = "";
+  static String lastTimeText = "";
+
   switch (heatTrend)
   {
   case HeaterTrend::HEATING:
@@ -207,11 +320,49 @@ void updateTimer(long dispSeconds)
     timeText = "Unknown for: ";
     break;
   }
-  if (heaterMonitor.getState() != HeaterState::OFF && heaterMonitor.getState() != HeaterState::STARTUP)
+
+  if (heaterMonitor.getState() == HeaterState::OFF)
   {
+    static int lastMinute = -1;
+    // Display time of day
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo))
+    {
+      Serial.println("Failed to obtain time");
+      return;
+    }
+    // Exit if the time hasn't updated to avoid flicker
+    if (timeinfo.tm_min == lastMinute)
+    {
+      return;
+    }
+
+    lastMinute = timeinfo.tm_min;
+
+    char timeOfDay[9];
+    // format time of day h:mm am/pm
+    strftime(timeOfDay, 9, "%l:%M %p", &timeinfo);
+    dmaDisplay->setFont(&TomThumb); // Set font to small
+    dmaDisplay->fillRect(0, 21, 64, 11, COLOR_BLACK);
+    dmaDisplay->printRight(63, 31, COLOR_WHITE, timeOfDay);
+  }
+  else if (heaterMonitor.getState() == HeaterState::STARTUP)
+  {
+    return;
+  }
+  else
+  {
+
+    if (strcmp(durationStr, lastDurationStr) == 0)
+    {
+      return;
+    }
+    strcpy(lastDurationStr, durationStr);
+
     dmaDisplay->fillRect(0, 21, 64, 11, COLOR_BLACK);
     dmaDisplay->setFont(&TomThumb);
-    dmaDisplay->printAt(0, 31, trendColor, "%s%s", timeText.c_str(), timeStr);
+
+    dmaDisplay->printAt(0, 31, trendColor, "%s%s", timeText.c_str(), durationStr);
   }
 }
 
@@ -241,11 +392,16 @@ void handleCommand()
 
 void handleCurrentReading()
 {
+  static double lastReading = -1.0;
   if (server.hasArg("value"))
   {
     String current = server.arg("value");
-    Serial.println("Current reading via current: " + current);
-    currentReading = current.toFloat();
+    if (current.toFloat() != lastReading)
+    {
+      Serial.println("Current reading via current: " + current);
+      currentReading = current.toFloat();
+      lastReading = currentReading;
+    }
     lastCurUpdate = millis();
     server.send(200, "text/plain", "Received: " + current);
   }
@@ -281,4 +437,37 @@ void listConnectedDevices()
     Serial.print(" - IP: ");
     Serial.println(IPAddress(station.ip.addr));
   }
+}
+
+bool shouldDisplayBeOn()
+{
+  struct tm timeinfo;
+  getLocalTime(&timeinfo);
+  int currentHour = timeinfo.tm_hour;
+  int currentDay = timeinfo.tm_wday; // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+
+  // Define the schedule (example: display on from 6am to 10pm on weekdays, 8am to 11pm on weekends)
+  std::map<int, std::vector<std::tuple<int, int>>> displaySchedule = {
+      {1, {{8, 22}}}, // Monday
+      {2, {{8, 22}}}, // Tuesday
+      {3, {{8, 22}}}, // Wednesday
+      {4, {{8, 22}}}, // Thursday
+      {5, {{8, 19}}}, // Friday
+      {6, {{8, 18}}}, // Saturday
+      {0, {{12, 18}}}  // Sunday
+  };
+
+  if (displaySchedule.find(currentDay) != displaySchedule.end())
+  {
+    for (const auto &period : displaySchedule.at(currentDay))
+    {
+      int startHour = std::get<0>(period);
+      int endHour = std::get<1>(period);
+      if (currentHour >= startHour && currentHour < endHour)
+      {
+        return true;
+      }
+    }
+  }
+  return false;
 }
