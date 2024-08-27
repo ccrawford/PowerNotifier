@@ -59,7 +59,7 @@ void setup()
   dmaDisplay->setTextWrap(true);
   dmaDisplay->print("Connecting WiFi");
   WiFi.mode(WIFI_MODE_APSTA);
-  WiFi.begin("CAC_Unifi", "illini1230");
+  WiFi.begin("ge_wifi", "");
   while (WiFi.status() != WL_CONNECTED)
   {
     static int retryCounter = 0;
@@ -222,13 +222,22 @@ void updateDisplay(HeaterState curState)
 {
   static HeaterState lastState = HeaterState::STARTUP;
 
+  
+
   if (curState==HeaterState::OFF && !shouldDisplayBeOn())
   {
     // Turn off the display and bail
     dmaDisplay->setBrightness8(0);
+    // Set the lastState to something that will force a refresh when the display is turned back on in the a.m.
+    lastState = HeaterState::UNKNOWN;
     return;
   }
 
+  // Need to refresh when the display goes from shouldDisplayBeOn() == false to true.
+
+
+  
+  
   // If no change, bail to prevent flicker.
   if (curState == lastState)
   {
@@ -449,7 +458,7 @@ bool shouldDisplayBeOn()
   // Define the schedule (example: display on from 6am to 10pm on weekdays, 8am to 11pm on weekends)
   std::map<int, std::vector<std::tuple<int, int>>> displaySchedule = {
       {1, {{8, 22}}}, // Monday
-      {2, {{8, 22}}}, // Tuesday
+      {2, {{8, 22}}}, // Tuesday  
       {3, {{8, 22}}}, // Wednesday
       {4, {{8, 22}}}, // Thursday
       {5, {{8, 19}}}, // Friday

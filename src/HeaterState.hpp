@@ -55,12 +55,6 @@ enum class HeaterState
     UNKNOWN
 };
 
-enum class PowerState
-{
-    ON,
-    OFF,
-    UNKNOWN
-};
 
 class HeaterMonitor
 {
