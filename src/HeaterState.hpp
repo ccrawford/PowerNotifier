@@ -157,11 +157,11 @@ public:
                 {
                     setState(HeaterState::HOT, updateTime);
                 }
-                else if (getTrend() == HeaterTrend::HEATING && lastStateChangeTime > WARM_TO_HOT_MS)
+                else if (getTrend() == HeaterTrend::HEATING && updateTime - lastStateChangeTime > WARM_TO_HOT_MS)
                 {
                     setState(HeaterState::HOT, updateTime);
                 }
-                else if (getTrend() == HeaterTrend::COOLING && lastStateChangeTime > WARM_TO_COOL_MS)
+                else if (getTrend() == HeaterTrend::COOLING && updateTime - lastStateChangeTime > WARM_TO_COOL_MS)
                 {
                     setState(HeaterState::COOL, updateTime);
                 }
